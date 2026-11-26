@@ -1,5 +1,5 @@
-"""SitRight dashboard: local, read-only ThingSpeak proxy. Python 3.9+, no pip packages."""
-import json, re, urllib.request, urllib.parse, urllib.error, webbrowser, threading
+"""SitRight dashboard: read-only ThingSpeak proxy. Python 3.9+, no pip packages."""
+import json, os, re, urllib.request, urllib.parse, urllib.error, webbrowser, threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parent
@@ -8,7 +8,13 @@ LOCK = threading.Lock()
 
 def config():
     with LOCK:
-        return json.loads(CONFIG.read_text(encoding='utf-8'))
+        if CONFIG.exists():
+            return json.loads(CONFIG.read_text(encoding='utf-8'))
+        return {
+            'channel_id': os.environ.get('THINGSPEAK_CHANNEL_ID', ''),
+            'read_api_key': os.environ.get('THINGSPEAK_READ_API_KEY', ''),
+            'demo_mode': os.environ.get('DEMO_MODE', 'true').lower() == 'true',
+        }
 
 def public_config(c):
     return {'channel_id': c.get('channel_id',''), 'has_read_key': bool(c.get('read_api_key')), 'demo_mode': bool(c.get('demo_mode',True))}
@@ -43,9 +49,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'error':'Not found'},404)
     def do_POST(self):
         if self.path!='/api/config': return self.send_json({'error':'Not found'},404)
-        # Local application; reject cross-origin browser writes.
+        # Reject cross-origin browser writes while allowing same-origin hosts (localhost & Render).
         origin=self.headers.get('Origin')
-        if origin and origin not in ('http://127.0.0.1:8765','http://localhost:8765'): return self.send_json({'error':'Origin not allowed'},403)
+        host=self.headers.get('Host')
+        if origin and host and urllib.parse.urlsplit(origin).netloc!=host: return self.send_json({'error':'Origin not allowed'},403)
         if self.headers.get('Content-Type','').split(';')[0]!='application/json': return self.send_json({'error':'JSON required'},415)
         try:
             length=int(self.headers.get('Content-Length','0'))
@@ -63,8 +70,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception: return self.send_json({'error':'Enter a numeric Channel ID and valid settings.'},400)
 
 if __name__=='__main__':
-    url='http://127.0.0.1:8765'; server=ThreadingHTTPServer(('127.0.0.1',8765),Handler)
-    print('SitRight running at '+url+'\nPress Ctrl+C to stop.')
-    threading.Timer(0.8,lambda:webbrowser.open(url)).start()
+    port=int(os.environ.get('PORT','8765'))
+    host='0.0.0.0' if 'PORT' in os.environ else '127.0.0.1'
+    url=f'http://{host}:{port}'; server=ThreadingHTTPServer((host,port),Handler)
+    print('SitRight running at '+url+'\nPress Ctrl+C to stop.',flush=True)
+    if 'PORT' not in os.environ:
+        threading.Timer(0.8,lambda:webbrowser.open(url)).start()
     try: server.serve_forever()
     except KeyboardInterrupt: server.server_close()
